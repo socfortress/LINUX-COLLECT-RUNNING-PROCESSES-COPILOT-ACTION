@@ -1,10 +1,10 @@
-## Collect Running Processes
+## Collect-Running-Processes.sh
 
 This script collects a snapshot of all running processes on the system, including key metadata, and outputs the results in JSON format for integration with security tools like OSSEC/Wazuh.
 
 ### Overview
 
-The `Collect-Running-Processes` script enumerates all running processes, collecting details such as PID, parent PID, user, command line, executable path, and SHA256 hash of the binary. Output is formatted as JSON for active response workflows.
+The `Collect-Running-Processes.sh` script enumerates all running processes, collecting details such as PID, parent PID, user, command line, executable path, and SHA256 hash of the binary. Output is formatted as JSON for active response workflows.
 
 ### Script Details
 
@@ -20,7 +20,7 @@ The `Collect-Running-Processes` script enumerates all running processes, collect
 
 #### Command Line Execution
 ```bash
-./Collect-Running-Processes
+./Collect-Running-Processes.sh
 ```
 
 #### Parameters
@@ -28,7 +28,7 @@ The `Collect-Running-Processes` script enumerates all running processes, collect
 | Parameter | Type | Default Value | Description |
 |-----------|------|---------------|-------------|
 | `ARLog`   | string | `/var/ossec/active-response/active-responses.log` | Path for active response JSON output |
-| `LogPath` | string | `/tmp/Collect-Running-Processes-script.log` | Path for detailed execution logs |
+| `LogPath` | string | `/tmp/Collect-Running-Processes.sh-script.log` | Path for detailed execution logs |
 | `LogMaxKB` | int | 100 | Maximum log file size in KB before rotation |
 | `LogKeep` | int | 5 | Number of rotated log files to retain |
 
@@ -54,7 +54,7 @@ The `Collect-Running-Processes` script enumerates all running processes, collect
 {
   "timestamp": "2025-07-18T10:30:45.123Z",
   "host": "HOSTNAME",
-  "action": "Collect-Running-Processes",
+  "action": "Collect-Running-Processes.sh",
   "data": [
     {
       "pid": "1234",
@@ -98,7 +98,7 @@ The `Collect-Running-Processes` script enumerates all running processes, collect
 #### Debugging
 Enable verbose logging:
 ```bash
-VERBOSE=1 ./Collect-Running-Processes
+VERBOSE=1 ./Collect-Running-Processes.sh
 ```
 
 ### Contributing
