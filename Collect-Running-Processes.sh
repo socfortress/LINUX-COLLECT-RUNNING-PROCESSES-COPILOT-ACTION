@@ -6,27 +6,25 @@ LogPath="/tmp/${ScriptName}-script.log"
 ARLog="/var/ossec/active-response/active-responses.log"
 LogMaxKB=100
 LogKeep=5
-HostName=$(hostname)
-runStart=$(date +%s)
+HostName="$(hostname)"
+runStart="$(date +%s)"
 
 WriteLog() {
-  local msg="$1"
-  local level="${2:-INFO}"
-  local ts
-  ts=$(date '+%Y-%m-%d %H:%M:%S')
-  local line="[$ts][$level] $msg"
-  echo "$line" >&2
-  echo "$line" >> "$LogPath"
+  msg="$1"; level="${2:-INFO}"
+  ts="$(date '+%Y-%m-%d %H:%M:%S%z')"
+  line="[$ts][$level] $msg"
+  printf '%s\n' "$line" >&2
+  printf '%s\n' "$line" >> "$LogPath"
 }
 
 RotateLog() {
   [ -f "$LogPath" ] || return 0
-  local size_kb
-  size_kb=$(du -k "$LogPath" | awk '{print $1}')
+  size_kb=$(awk -v s="$(wc -c <"$LogPath")" 'BEGIN{printf "%.0f", s/1024}')
   [ "$size_kb" -le "$LogMaxKB" ] && return 0
-  local i=$((LogKeep-1))
-  while [ $i -ge 0 ]; do
-    [ -f "$LogPath.$i" ] && mv -f "$LogPath.$i" "$LogPath.$((i+1))"
+  i=$((LogKeep-1))
+  while [ $i -ge 1 ]; do
+    src="$LogPath.$i"; dst="$LogPath.$((i+1))"
+    [ -f "$src" ] && mv -f "$src" "$dst" || true
     i=$((i-1))
   done
   mv -f "$LogPath" "$LogPath.1"
@@ -36,61 +34,73 @@ escape_json() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
+BeginNDJSON() {
+  TMP_AR="$(mktemp)"
+}
+
+AddRecord() {
+  ts="$(date '+%Y-%m-%d %H:%M:%S%z')"
+  pid="$(escape_json "$1")"
+  ppid="$(escape_json "$2")"
+  user="$(escape_json "$3")"
+  cmd="$(escape_json "$4")"
+  exe="$(escape_json "$5")"
+  sha256="$(escape_json "$6")"
+  kernel="${7:-0}"
+  printf '{"timestamp":"%s","host":"%s","action":"%s","copilot_action":true,"pid":"%s","ppid":"%s","user":"%s","cmd":"%s","exe":"%s","sha256":"%s","kernel_thread":%s}\n' \
+    "$ts" "$HostName" "$ScriptName" \
+    "$pid" "$ppid" "$user" "$cmd" "$exe" "$sha256" "$kernel" >> "$TMP_AR"
+}
+
+CommitNDJSON() {
+  if mv -f "$TMP_AR" "$ARLog" 2>/dev/null; then
+    :
+  else
+    mv -f "$TMP_AR" "$ARLog.new" 2>/dev/null || printf '{"timestamp":"%s","host":"%s","action":"%s","copilot_action":true,"status":"error","message":"atomic move failed"}\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S%z')" "$HostName" "$ScriptName" > "$ARLog.new"
+  fi
+}
+
 RotateLog
-
-rm -f "$ARLog" 2>/dev/null || true
-: > "$ARLog"
-WriteLog "Active response log cleared for fresh run."
-
-WriteLog "=== SCRIPT START : $ScriptName ==="
-
+WriteLog "START $ScriptName"
+BeginNDJSON
 WriteLog "Collecting running processes snapshot..."
 
-results=()
 for pid_dir in /proc/[0-9]*; do
-  pid=$(basename "$pid_dir")
-  [ -d "/proc/$pid" ] || continue
+  [ -d "$pid_dir" ] || continue
+  pid="${pid_dir#/proc/}"
 
-  ppid=$(awk '/^PPid:/ {print $2}' "/proc/$pid/status" 2>/dev/null || echo "")
-  cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | sed 's/ $//')
-  if [ -z "$cmdline" ]; then
-    cmdline=$(cat "/proc/$pid/comm" 2>/dev/null || echo "")
+  ppid="$(awk '/^PPid:/ {print $2}' "$pid_dir/status" 2>/dev/null || echo "")"
+
+  cmdline_raw="$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null || true)"
+  is_kernel=0
+  if [ -z "$cmdline_raw" ]; then
+    is_kernel=1
   fi
-  user=$(stat -c '%U' "/proc/$pid" 2>/dev/null || echo "unknown")
-  exe_path=$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo "")
+  if [ -n "$cmdline_raw" ]; then
+    cmdline="${cmdline_raw% }"
+  else
+    cmdline="$(cat "$pid_dir/comm" 2>/dev/null || echo "")"
+  fi
+
+  user="$(stat -c '%U' "$pid_dir" 2>/dev/null || echo "unknown")"
+
+  exe_path=""
+  if [ -L "$pid_dir/exe" ]; then
+    resolved="$(readlink -f "$pid_dir/exe" 2>/dev/null || true)"
+    if [ -n "$resolved" ] && [ -f "$resolved" ]; then
+      exe_path="$resolved"
+    fi
+  fi
+
   sha256=""
   if [ -n "$exe_path" ] && [ -f "$exe_path" ]; then
-    sha256=$(sha256sum "$exe_path" 2>/dev/null | awk '{print $1}' || echo "")
+    sha256="$(sha256sum "$exe_path" 2>/dev/null | awk '{print $1}' || echo "")"
   fi
 
-  pid_j=$(escape_json "$pid")
-  ppid_j=$(escape_json "$ppid")
-  user_j=$(escape_json "$user")
-  cmdline_j=$(escape_json "$cmdline")
-  exe_j=$(escape_json "$exe_path")
-  sha256_j=$(escape_json "$sha256")
-
-  results+=("{\"pid\":\"$pid_j\",\"ppid\":\"$ppid_j\",\"user\":\"$user_j\",\"cmd\":\"$cmdline_j\",\"exe\":\"$exe_j\",\"sha256\":\"$sha256_j\"}")
+  AddRecord "$pid" "$ppid" "$user" "$cmdline" "$exe_path" "$sha256" "$is_kernel"
 done
 
-if [ ${#results[@]} -eq 0 ]; then
-  data="[]"
-else
-  data="["
-  data+=$(IFS=, ; echo "${results[*]}")
-  data+="]"
-fi
-
-ts=$(date --iso-8601=seconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')
-final_json="{\"timestamp\":\"$ts\",\"host\":\"$HostName\",\"action\":\"$ScriptName\",\"data\":$data,\"copilot_action\":true}"
-
-tmpfile=$(mktemp)
-printf '%s\n' "$final_json" > "$tmpfile"
-if ! mv -f "$tmpfile" "$ARLog" 2>/dev/null; then
-  mv -f "$tmpfile" "$ARLog.new"
-fi
-
-WriteLog "JSON result written to $ARLog"
-
+CommitNDJSON
 dur=$(( $(date +%s) - runStart ))
-WriteLog "=== SCRIPT END : duration ${dur}s ==="
+WriteLog "END $ScriptName in ${dur}s"
