@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -eu
 
 ScriptName="Collect-Running-Processes"
@@ -7,13 +7,13 @@ ARLog="/var/ossec/logs/active-responses.log"
 LogMaxKB=100
 LogKeep=5
 HostName="$(hostname)"
-runStart="$(date +%s)"
+runStart=$(date +%s)
 
 WriteLog() {
-  msg="$1"; level="${2:-INFO}"
+  Message="$1"; Level="${2:-INFO}"
   ts="$(date '+%Y-%m-%d %H:%M:%S')"
-  line="[$ts][$level] $msg"
-  printf '%s\n' "$line" >&2
+  line="[$ts][$Level] $Message"
+  printf '%s\n' "$line"
   printf '%s\n' "$line" >> "$LogPath"
 }
 
@@ -30,15 +30,15 @@ RotateLog() {
 }
 
 iso_now() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
-escape_json() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+escape_json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 BeginNDJSON() { TMP_AR="$(mktemp)"; }
 AddRecord() {
   ts="$(iso_now)"
-  pid_num="$1"; ppid_num="$2"; user="$3"; cmd="$4"; exe="$5"; sha256="$6"; kernel="$7"
-  if [ -z "${pid_num:-}" ]; then return; fi
-  if [ -z "${ppid_num:-}" ]; then ppid_num=0; fi
-  kbool="false"; [ "$kernel" = "1" ] && kbool="true"
+  pid_num="$1"; ppid_num="$2"; user="$3"; cmd="$4"; exe="$5"; sha256="$6"; kernel_flag="$7"
+  [ -n "${pid_num:-}" ] || return
+  case "$ppid_num" in ''|*[!0-9]*) ppid_num=0 ;; esac
+  kbool="false"; [ "$kernel_flag" = "1" ] && kbool="true"
   printf '{"timestamp":"%s","host":"%s","action":"%s","copilot_action":true,"pid":%s,"ppid":%s,"user":"%s","cmd":"%s","exe":"%s","sha256":"%s","kernel_thread":%s}\n' \
     "$ts" "$HostName" "$ScriptName" \
     "$pid_num" "$ppid_num" \
@@ -63,7 +63,7 @@ CommitNDJSON() {
     else
       keep="/tmp/active-responses.$$.ndjson"
       cp -f "$TMP_AR" "$keep" 2>/dev/null || true
-      WriteLog "Failed both writes; saved $keep" ERROR
+      WriteLog "Failed to write both $ARLog and $ARLog.new; saved $keep" ERROR
       rm -f "$TMP_AR" 2>/dev/null || true
       exit 1
     fi
@@ -81,19 +81,16 @@ CommitNDJSON() {
 RotateLog
 WriteLog "=== SCRIPT START : $ScriptName (host=$HostName) ==="
 BeginNDJSON
-WriteLog "Collecting running processes snapshot..."
+WriteLog "Collecting running processes snapshot..." INFO
 
 emitted=0
 
 for pid_dir in /proc/[0-9]*; do
   [ -d "$pid_dir" ] || continue
   pid="${pid_dir#/proc/}"
-
-  # PPid from status (fallback 0)
   ppid="$(awk '/^PPid:/ {print $2}' "$pid_dir/status" 2>/dev/null || echo 0)"
   case "$ppid" in ''|*[!0-9]*) ppid=0 ;; esac
 
-  # cmdline or comm; detect kernel thread (empty cmdline)
   cmdline_raw="$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null || true)"
   is_kernel=0
   if [ -z "$cmdline_raw" ]; then
@@ -103,10 +100,8 @@ for pid_dir in /proc/[0-9]*; do
     cmdline="${cmdline_raw% }"
   fi
 
-  # owner
   user="$(stat -c '%U' "$pid_dir" 2>/dev/null || echo "unknown")"
 
-  # exe path (if real file)
   exe_path=""
   if [ -L "$pid_dir/exe" ]; then
     resolved="$(readlink -f "$pid_dir/exe" 2>/dev/null || true)"
@@ -115,9 +110,8 @@ for pid_dir in /proc/[0-9]*; do
     fi
   fi
 
-  # sha256 (best-effort)
   sha256=""
-  if [ -n "$exe_path" ] && [ -f "$exe_path" ]; then
+  if [ -n "$exe_path" ] && [ -f "$exe_path" ] && command -v sha256sum >/dev/null 2>&1; then
     sha256="$(sha256sum "$exe_path" 2>/dev/null | awk '{print $1}' || true)"
   fi
 
@@ -125,10 +119,7 @@ for pid_dir in /proc/[0-9]*; do
   emitted=$((emitted+1))
 done
 
-# Ensure at least one line
-if [ "$emitted" -eq 0 ]; then
-  AddStatus "no_results" "no running processes snapshot produced"
-fi
+[ "$emitted" -gt 0 ] || AddStatus "no_results" "no processes enumerated"
 
 CommitNDJSON
 dur=$(( $(date +%s) - runStart ))
